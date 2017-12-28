@@ -21,26 +21,30 @@ interface
 //    TfxRegFile is a TRegistry like that store informations in binary file,
 //    not the windows system registry. It has the same basic functions as in
 //    TRegistry.
-//    
-//    This version is a major rewrite version, thus will not compatible with 
+//
+//    This version is a major rewrite version, thus will not compatible with
 //    datafile created by TfxRegFile v1.0.
-//    
+//
 //    WHAT'S NEW:
 //      * indexed entry, making searching entry will be faster than before
 //      * ability to reuse space
 //      * ability to compact datafile, removing any unused space
-//      * up to 1,000,000 record (i hope this is enough since we were not 
+//      * up to 1,000,000 record (i hope this is enough since we were not
 //        talking about full featured database engine, it is a registry file)
-//    
-//    This unit use some routines from FastCode Project 
+//
+//    This unit use some routines from FastCode Project
 //    http://dennishomepage.gugs-cats.dk/FastCodeProject.htm
-//    
+//
 //      * FillCharJOH_FPU
 //      * MoveJOH_IA32
-//    
+//
 //    thanks to FastCode people for this great code.
-//    
+//
 // ========================================================================
+// UPDATE:
+//
+// 01-01-2006: Bug on DeleteKey fixed!
+//
 ///////////////////////////////////////////////////////////////////////////////
 uses
   SysUtils, Classes;
@@ -143,7 +147,7 @@ type
     procedure Delete(const AIndex: integer);
 
     property Items[Index: Integer]: TfxRegDataHeader read GetItem;
-    property Count: integer read FCount;    
+    property Count: integer read FCount;
   end;
 
   TfxRegFile = class(TObject)
@@ -163,7 +167,7 @@ type
     procedure ReadFileHeader;
     procedure WriteFileHeader;
     procedure ReadRecordData(const AOffset: Integer; Buffer: TStream);
-    procedure WriteRecordData(Buffer: TStream);    
+    procedure WriteRecordData(Buffer: TStream);
     procedure ParseKeys(AKeys: string; AStrings: TStringList);
     function GetIndexOffset(AItemIndex: Integer): integer;
     function GetParentKeyName: string;
@@ -190,6 +194,7 @@ type
     function InternalOpenKey(const AKeyName: string;
       const CanCreate: boolean = True): boolean;
 
+    function DefFullCompare(Item1, Item2: Pointer): Integer;    
     function DefaultIndexSort(Item1, Item2: Pointer): Integer;
     function DefaultFindCompare(Item1, Item2: Pointer): Integer;
     function DefaultListFindCompare(Item1, Item2: Pointer): Integer;
@@ -200,6 +205,9 @@ type
     constructor Create(AStream: TStream); overload;
     constructor Create(const AFileName: string); overload;
     destructor Destroy; override;
+
+    procedure LoadFromStream(AStream: TStream);
+    procedure SaveToStream(AStream: TStream);
 
     function GetRecordHeader(AOffset: integer): TfxRegDataHeader;
 
@@ -223,7 +231,7 @@ type
 
     procedure DeleteKey(const Key: string);
     procedure DeleteValue(const Name: string);
-    
+
     procedure Reindex;
 
     procedure ReadStream(const Name: string; AStream: TStream);
@@ -237,7 +245,10 @@ type
     function ReadCurrency(const Name: string): Currency;
     procedure ReadStrings(const Name: string; List: TStrings);
 
-    procedure Compact(const TmpFileName: string);
+    procedure Compact; overload;
+    procedure Compact(const TmpFileName: string); overload;
+
+    procedure Clear;
 
     procedure WriteCurrency(const Name: string; Value: Currency);
     procedure WriteBinaryData(const Name: string;
@@ -252,6 +263,7 @@ type
     procedure WriteInteger(const Name: string; Value: Integer);
     procedure WriteString(const Name, Value: string);
     procedure WriteTime(const Name: string; Value: TDateTime);
+    procedure WriteStrings(const Name: string; List: TStrings); 
 
     property Stream: TStream read FFileStream;
     property CurrentPath: string read FKeyTree;
@@ -259,7 +271,7 @@ type
     property CurrentParentID: integer read GetCurrentParentID;
 
     property ItemPos[Index: Integer]: Integer read GetItemPos;
-    property IndexCount: integer read GetIndexCount;    
+    property IndexCount: integer read GetIndexCount;
   end;
 
 
@@ -587,7 +599,7 @@ asm
 @Bwd01:
   mov   cl,[eax]
   mov   [edx],cl
-end;  
+end;
 
 { TfxRecList }
 procedure QuickSort(SortList: PPointerList; L, R: Integer;
@@ -672,7 +684,7 @@ function TfxRegCacheManager.FindOffset(AOffset: Integer): integer;
 var
   Found: boolean;
   i: integer;
-  Rec: pfxRegCacheRec;  
+  Rec: pfxRegCacheRec;
 begin
   Found := False;
   I := -1;
@@ -732,8 +744,8 @@ begin
     FCachedReg[0] := PCachedRec;
     Inc(FCount);
   end;
-end;  
-  
+end;
+
 procedure TfxRegCacheManager.Replace(const AIndex, NewOffset: integer;
   AHdr: TfxRegDataHeader);
 var
@@ -741,7 +753,7 @@ var
 begin
   PCachedRec := FCachedReg[AIndex];
   PCachedRec^.DataOffset := NewOffset;
-  FastMove(AHdr, PCachedRec^.RegHeader, SizeOf(TfxRegDataHeader));    
+  FastMove(AHdr, PCachedRec^.RegHeader, SizeOf(TfxRegDataHeader));
 end;
 
 { TfxRegFile }
@@ -844,6 +856,9 @@ procedure TfxRegFile.Initialize;
   end;
 
 begin
+  FRecOffsetList.Clear;
+  FRegCacheManager.Clear;
+  FFileStream.Position := 0;
   FastFillChar(FFileHeader, SizeOf(TfxRegFileHeader), 0);
   FastFillChar(FPDataHeader, SizeOf(TfxRegDataHeader), 0);
   FPDataOffset := 0;
@@ -862,10 +877,10 @@ begin
   end;
   { if Record is null then create root key }
   if FFileHeader.RecordCount = 0 then
-  begin    
+  begin
     InternalCreateKey(fxRootID);
     FFileHeader.DataOffset := FPDataOffset;
-    WriteFileHeader;    
+    WriteFileHeader;
   end;
 end;
 
@@ -875,7 +890,7 @@ var
   APos: integer;
 begin
   { Prepare Index Block }
-  GetMem(pBuf, SizeOf(integer) * fxIndexBlock); 
+  GetMem(pBuf, SizeOf(integer) * fxIndexBlock);
   try
     FastFillChar(pBuf^, SizeOf(integer) * fxIndexBlock, 0);
     Stream.Seek(0, soFromEnd);
@@ -893,7 +908,7 @@ begin
     Stream.Seek(Result, soFromBeginning);
     if (Stream.Write(APos, SizeOf(Integer)) <>
         SizeOf(Integer)) then
-      raise EfxRegFileError.Create(SFileWriteError);    
+      raise EfxRegFileError.Create(SFileWriteError);
   finally
     FreeMem(pBuf, SizeOf(integer) * fxIndexBlock);
   end;
@@ -914,7 +929,7 @@ var
     if (FindRec.LastPos >= 0) and
        (FindRec.LastPos < FRecOffsetList.Count) then
     begin
-      FindRec.Found := DefaultFindCompare(pHdr, @AHdr);
+      FindRec.Found := DefFullCompare(pHdr, @AHdr);
       Compres := FindRec.Found;
       if FindRec.Found < 0 then
       begin
@@ -931,7 +946,7 @@ var
                       FRecOffsetList.Items[FindRec.LastPos]
                     )
                   );
-          CompRes := DefaultFindCompare(pHdr, @AHdr);
+          CompRes := DefFullCompare(pHdr, @AHdr);
           if not (CompRes <= 0) then
           begin
             Inc(FindRec.LastPos);
@@ -950,18 +965,18 @@ var
                       FRecOffsetList.Items[FindRec.LastPos]
                     )
                   );
-          CompRes := DefaultFindCompare(pHdr, @AHdr);
+          CompRes := DefFullCompare(pHdr, @AHdr);
           if not (CompRes >= 0) then
           begin
             Dec(FindRec.LastPos);
             break;
           end;
-        end;      
+        end;
       end;
       FindRec.Found := CompRes;
     end;
   end;
-  
+
 begin
   BPos := -1;
   try
@@ -1086,7 +1101,7 @@ end;
 procedure TfxRegFile.InternalCreateKey(const KeyName: string);
 var
   RecHeader: TfxRegDataHeader;
-begin    
+begin
   FastFillChar(RecHeader, SizeOf(TfxRegDataHeader), 0);
   RecHeader.PID:= FPDataHeader.ID;
   StrPCopy(RecHeader.Ident, KeyName);
@@ -1104,7 +1119,7 @@ procedure TfxRegFile.InternalDelete(Offset: integer;
 var
   APos     : Integer;
   Count    : Integer;
-  AHdr     : TfxRegDataHeader;  
+  AHdr     : TfxRegDataHeader;
 begin
   pHdr^.Deleted := True;
   APos := Stream.Position;
@@ -1135,7 +1150,7 @@ begin
     end;
   finally
     Stream.Position := APos;
-  end;  
+  end;
 end;
 
 
@@ -1144,7 +1159,7 @@ var
   ReadTotal, Count,
   IndexTotal, I, J: integer;
   APos, CIndexOffset: integer;
-  pBuf: Pointer;  
+  pBuf: Pointer;
 begin
   FRecOffsetList.Clear;
   if FFileHeader.IndexCount > 0 then
@@ -1179,13 +1194,13 @@ begin
                 raise EfxRegFileError.Create(SIndexFileCorruptError);
           finally
             FreeMem(pBuf, ReadTotal * SizeOf(Integer));
-          end;          
+          end;
         end;
       end;
     finally
       Stream.Position := APos;
     end;
-  end;       
+  end;
 end;
 
 procedure TfxRegFile.InternalUpdateIndex(AFromIndex: integer);
@@ -1211,13 +1226,13 @@ begin
       EndPos   := (StartPos + fxIndexBlock) - (StartPos mod fxIndexBlock);
       if (EndPos > FFileHeader.IndexCount) or (EndPos = 0) then
         EndPos := FFileHeader.IndexCount;
-      Count := EndPos - StartPos;      
+      Count := EndPos - StartPos;
       GetMem(pBuf, Count * SizeOf(Integer));
       try
         for J := StartPos to EndPos-1 do
           PfxMaxIntArray(pBuf)[j-StartPos] := Integer(FRecOffsetList.Items[j]);
         IndexOffset := GetIndexOffset(StartPos);
-        
+
         if (StartPos > (I * fxIndexBlock)) then
           IndexOffset := IndexOffset +
                          ((StartPos mod fxIndexBlock) * SizeOf(Integer));
@@ -1254,7 +1269,7 @@ end;
 procedure TfxRegFile.ReadFileHeader;
 var
   APos: Integer;
-  ACount: Integer;  
+  ACount: Integer;
 begin
   APos := Stream.Position;
   Stream.Seek(0, soFromBeginning);
@@ -1280,7 +1295,7 @@ end;
 procedure TfxRegFile.WriteFileHeader;
 var
   APos: Integer;
-  ACount: Integer;  
+  ACount: Integer;
 begin
   APos := Stream.Position;
   Stream.Seek(0, soFromBeginning);
@@ -1311,7 +1326,7 @@ begin
     if (AHdr.DataOffset > 0) and
        (Integer(AHdr.DataType) <= 3) then
     begin
-      GetMem(pBuf, AHdr.DataSize);      
+      GetMem(pBuf, AHdr.DataSize);
       try
         Stream.Read(pBuf^, AHdr.DataSize);
         Buffer.Write(pBuf^, AHdr.DataSize);
@@ -1360,7 +1375,7 @@ function TfxRegFile.OpenKey(const AKeyNames: string;
   const CanCreate: boolean): boolean;
 var
   AList: TStrings;
-  i: integer;  
+  i: integer;
 begin
   Result := True;
   FKeyTree := '';
@@ -1369,8 +1384,9 @@ begin
     AList := TStringList.Create;
     try
       ParseKeys(AKeyNames, TStringList(AList));
-      if (Pos('\', AKeyNames) = 1) then
-      begin        
+      if (Pos('\', AKeyNames) = 1) or
+         (FPDataHeader.ID < 1) then
+      begin
         InternalReadRootKey;
         FKeyTree := '\';
       end;
@@ -1383,11 +1399,11 @@ begin
         if FKeyTree = '\' then
           FKeyTree := FKeyTree+AList[i]
         else
-          FKeyTree := FKeyTree+'\'+AList[i]; 
+          FKeyTree := FKeyTree+'\'+AList[i];
       end;
     finally
       AList.Free;
-    end;    
+    end;
   end;
 end;
 
@@ -1398,8 +1414,8 @@ var
 begin
   APos := Stream.Position;
   try
-    { First Data offset assigned in File Header is always our root key }    
-    Stream.Position := FFileHeader.DataOffset;    
+    { First Data offset assigned in File Header is always our root key }
+    Stream.Position := FFileHeader.DataOffset;
     Count := Stream.Read(AHdr, SizeOf(TfxRegDataHeader));
     if Count <> SizeOf(TfxRegDataHeader) then
       raise EfxRegFileError.Create(SFileReadError);
@@ -1437,6 +1453,8 @@ var
 begin
   AHdr1  := GetRecordHeader(Integer(Item1));
   AHdr2  := GetRecordHeader(Integer(Item2));
+  Result := DefFullCompare(@AHdr1, @AHdr2);
+{
   Result := CompareValue(AHdr1.PID, AHdr2.PID);
   if Result = 0 then
   begin
@@ -1448,13 +1466,14 @@ begin
         Result := CompareValue(AHdr1.ID, AHdr2.ID);
     end;
   end;
+}
 end;
 
 function TfxRegFile.DefaultFindCompare(Item1, Item2: Pointer): Integer;
 var
   CompRes: integer;
 begin
-  CompRes := CompareValue(TfxRegDataHeader(Item1^).PID,
+  CompRes := CompareValue(TfxRegDataHeader(Item1^).ID,
                     TfxRegDataHeader(Item2^).PID);
   if CompRes = 0 then
   begin
@@ -1463,6 +1482,28 @@ begin
     if CompRes = 0 then
       CompRes := CompareStr(TfxRegDataHeader(Item1^).Ident,
                             TfxRegDataHeader(Item2^).Ident);
+  end;
+  Result := CompRes;
+end;
+
+function TfxRegFile.DefFullCompare(Item1, Item2: Pointer): Integer;
+var
+  CompRes: integer;
+begin
+  CompRes := CompareValue(TfxRegDataHeader(Item1^).PID,
+                    TfxRegDataHeader(Item2^).PID);
+  if CompRes = 0 then
+  begin
+    CompRes := CompareValue(Integer(TfxRegDataHeader(Item1^).RegType),
+                    Integer(TfxRegDataHeader(Item2^).RegType));
+    if Compres = 0 then
+    begin
+      CompRes := CompareStr(TfxRegDataHeader(Item1^).Ident,
+                              TfxRegDataHeader(Item2^).Ident);
+      if CompRes = 0 then
+          CompRes := CompareValue(Integer(TfxRegDataHeader(Item1^).ID),
+                Integer(TfxRegDataHeader(Item2^).ID));
+    end;
   end;
   Result := CompRes;
 end;
@@ -1480,12 +1521,28 @@ begin
   Result := CompRes;
 end;
 
+{ Special treatment for moveup key }
 function TfxRegFile.DefaultCompareID(Item1, Item2: Pointer): Integer;
 var
   CompRes: integer;
 begin
   CompRes := CompareValue(TfxRegDataHeader(Item1^).PID,
-                    TfxRegDataHeader(Item2^).ID);
+                TfxRegDataHeader(Item2^).PID);
+  if CompRes <> 0 then
+  begin
+    CompRes := CompareValue(Integer(TfxRegDataHeader(Item1^).RegType),
+                    Integer(TfxRegDataHeader(Item2^).RegType));
+    if Compres = 0 then
+    begin
+      CompRes := CompareStr(TfxRegDataHeader(Item1^).Ident,
+                              TfxRegDataHeader(Item2^).Ident);
+      if CompRes <> 0 then
+          CompRes := CompareValue(Integer(TfxRegDataHeader(Item1^).PID),
+                Integer(TfxRegDataHeader(Item2^).ID));
+    end;
+  end else
+  if CompRes = 0 then
+    CompRes := -1;
   Result := CompRes;
 end;
 
@@ -1508,7 +1565,8 @@ begin
       Hi := FRecOffsetList.Count-1;
       FastFillChar(BHdr, SizeOf(TfxRegDataHeader), 0);
       StrPCopy(BHdr.Ident, AKeyName);
-      BHdr.PID := FPDataHeader.ID;
+      BHdr.ID := FPDataHeader.ID;
+      BHdr.PID := FPDataHeader.PID;
       BHdr.RegType := AKeyType;
       while Lo <= Hi do
       begin
@@ -1528,7 +1586,7 @@ begin
             gak perlu akses disk lg }
           FRegCacheManager.Push(Offset, AHdr);
         end;
-        { implementasi aktual b-seach }        
+        { implementasi aktual b-seach }
         CompRes := SCompare(@BHdr, @AHdr);
         if CompRes > 0 then
           Lo := Mid + 1
@@ -1574,14 +1632,14 @@ begin
         if AFlag = 0 then Mid := (Lo + Hi) div 2 // do bsearch
         else Mid := Mid + AFlag;    // rewind
         if (Mid < 0) then Mid := 0;
-        if (Mid >= FRecOffsetList.Count) then Mid := FRecOffsetList.Count-1; 
+        if (Mid >= FRecOffsetList.Count) then Mid := FRecOffsetList.Count-1;
         Offset := Integer(FRecOffsetList.Items[Mid]);
         AIndex := FRegCacheManager.FindOffset(Offset);
         if AIndex <> -1 then
           AHdr := FRegCacheManager.Items[AIndex]
         else begin
           Stream.Seek(Offset, soFromBeginning);
-          ACount := Stream.Read(AHdr, SizeOf(TfxRegDataHeader));        
+          ACount := Stream.Read(AHdr, SizeOf(TfxRegDataHeader));
           if (ACount <> SizeOf(TfxRegDataHeader)) then
             raise EfxRegFileError.Create(SFileReadError);
           FRegCacheManager.Push(Offset, AHdr);
@@ -1590,10 +1648,11 @@ begin
         CompRes := DefaultListFindCompare(@BHdr, @AHdr);
         if CompRes = 0 then
         begin
-          if AFlag = 0 then AFlag := -1;     // Rewind it... :)
+          if AFlag = 0 then // Rewind it...
+            AFlag := IfThen((Mid > Lo), -1, 1);
           if AFlag = 1 then  // we found the 1st record
           begin
-            FastMove(AHdr, pHdr, SizeOf(TfxRegDataHeader));            
+            FastMove(AHdr, pHdr, SizeOf(TfxRegDataHeader));
             Break;
           end;
         end else
@@ -1651,7 +1710,7 @@ begin
       end else
          Inc(APos);
     end else
-      break;    
+      break;
   end;
   FindRec.Found  := Integer(Found);
   FindRec.LastPos:= APos;
@@ -1681,18 +1740,45 @@ end;
 
 procedure TfxRegFile.MoveUpKey;
 var
-  FRecFound : TfxFindRec;
+  APID, I, Offset, APos, AIndex: Integer;
+  ACount: integer;
   AHdr: TfxRegDataHeader;
 begin
-  FRecFound := InternalFind('', rtKey, AHdr, DefaultCompareID);
-  { if not found }
-  if (FRecFound.Found = 0) then
+  if FRecOffsetList.Count > 0 then
   begin
-    FPDataOffset := Integer(FRecOffsetList.Items[FRecFound.LastPos]);
-    FastMove(AHdr, FPDataHeader, SizeOf(TfxRegDataHeader));
+    APos := Stream.Position;
+    try
+      APID := FPDataHeader.PID;
+      for I := 0 to FRecOffsetList.Count-1 do
+      begin
+        Offset := Integer(FRecOffsetList.Items[I]);
+        { cari dulu dalam cache, ketemu gak? }
+        AIndex := FRegCacheManager.FindOffset(Offset);
+        if AIndex <> -1 then
+          AHdr := FRegCacheManager.GetItem(AIndex)
+        else begin
+          { oh gak ketemu, ok ambil data header tsb dari disk  }
+          Stream.Seek(Offset, soFromBeginning);
+          ACount := Stream.Read(AHdr, SizeOf(TfxRegDataHeader));
+          if (ACount <> SizeOf(TfxRegDataHeader)) then
+            raise EfxRegFileError.Create(SFileReadError);
+          { push sementara kedalam cache biar kl diperlukan lg
+            gak perlu akses disk lg }
+          FRegCacheManager.Push(Offset, AHdr);
+        end;
+        if AHdr.ID = APID then
+        begin
+          FPDataOffset := Integer(FRecOffsetList.Items[I]);
+          FastMove(AHdr, FPDataHeader, SizeOf(TfxRegDataHeader));
+          break;
+        end;
+      end;
+    finally
+      Stream.Position := APos;
+    end;
   end;
 end;
-
+  
 procedure TfxRegFile.CloseKey;
 begin
   InternalReadRootKey;
@@ -1704,7 +1790,7 @@ var
   AHdr: TfxRegDataHeader;
 begin
   Strings.Clear;
-  FRecFound := InternalFindFirst(FPDataHeader.ID, rtKey,AHdr);
+  FRecFound := InternalFindFirst(CurrentParentID, rtKey,AHdr);
   if (FRecFound.Found = 0) then
   while InternalFindNext(FRecFound, AHdr) do
     Strings.Add(AHdr.Ident);
@@ -1716,7 +1802,7 @@ var
   AHdr: TfxRegDataHeader;
 begin
   Strings.Clear;
-  FRecFound := InternalFindFirst(FPDataHeader.ID, rtValue,AHdr);
+  FRecFound := InternalFindFirst(CurrentParentID, rtValue,AHdr);
   if (FRecFound.Found = 0) then
   while InternalFindNext(FRecFound, AHdr) do
     Strings.Add(AHdr.Ident);
@@ -1752,7 +1838,6 @@ begin
         end;
       StrPCopy(AKey, FPDataHeader.Ident);
       MoveUpKey;
-            
       FastFillChar(AHdr, SizeOf(TfxRegDataHeader), 0);
       AFindRec := InternalFind(AKey, rtKey, AHdr, DefaultFindCompare);
       if (AFindRec.Found = 0) then
@@ -1852,7 +1937,12 @@ begin
           end;
           WriteFileHeader;
           Found := True;
-          Result := APos;                                  
+          Result := APos;
+        end else
+        if APos = AHdr.NDOffset then
+        begin
+            Found := True;
+            Result:= AHdr.NDOffset;
         end else
         begin
           BPos := APos;
@@ -1866,7 +1956,7 @@ begin
       end;
     end;
   end else
-    Result := Stream.Seek(0, soFromEnd);    
+    Result := Stream.Seek(0, soFromEnd);
 end;
 
 procedure TfxRegFile.Compact(const TmpFileName: string);
@@ -1875,7 +1965,7 @@ var
   AHdr: TfxRegDataHeader;
   AStream: TMemoryStream;
   i, ReadCount, TotalSize: integer;
-  pBuf: Pointer;  
+  pBuf: Pointer;
 begin
   if FileExists(TmpFileName) then
     DeleteFile(TmpFileName);
@@ -1899,7 +1989,10 @@ begin
       end;
     end;
     TotalSize := 0;
-    Stream.Seek(0, soFromBeginning);
+    Stream.Size := 0;
+    Stream.Position := 0;
+    FRegCacheManager.Clear;
+    FRecOffsetList.Clear;
     ARegFile.Stream.Seek(0, soFromBeginning);
     GetMem(pBuf, fxIndexBlock);
     try
@@ -1908,14 +2001,14 @@ begin
         ReadCount := ARegFile.Stream.Read(pBuf^, fxIndexBlock);
         if ReadCount > 0 then
         begin
-          Stream.Write(pBuf^, ReadCount);          
+          Stream.Write(pBuf^, ReadCount);
           TotalSize := TotalSize + ReadCount;
         end;
         if (ReadCount <> fxIndexBlock) then
           break;
       end;
+      Initialize;
       Reindex;
-      InternalReadRootKey;
     finally
       FreeMem(pBuf, fxIndexBlock);
       Stream.Size := TotalSize;
@@ -1955,7 +2048,7 @@ begin
         finally
           FreeMem(pBuf, AHdr.DataSize);
         end;
-      end;        
+      end;
     finally
       Strm.Free;
     end;
@@ -1973,7 +2066,7 @@ begin
     if AHdr.DataType <> rdBoolean then
       raise EfxRegFileError.Create(SDataTypeError);
     FastMove(AHdr.IntData, Result, SizeOf(Boolean));
-  end; 
+  end;
 end;
 
 function TfxRegFile.ReadCurrency(const Name: string): Currency;
@@ -1987,7 +2080,7 @@ begin
     if AHdr.DataType <> rdCurrency then
       raise EfxRegFileError.Create(SDataTypeError);
     FastMove(AHdr.IntData, Result, SizeOf(Currency));
-  end; 
+  end;
 end;
 
 function TfxRegFile.ReadDate(const Name: string): TDateTime;
@@ -2001,7 +2094,7 @@ begin
     if AHdr.DataType <> rdDateTime then
       raise EfxRegFileError.Create(SDataTypeError);
     FastMove(AHdr.IntData, Result, SizeOf(TDateTime));
-  end; 
+  end;
 end;
 
 function TfxRegFile.ReadDateTime(const Name: string): TDateTime;
@@ -2015,7 +2108,7 @@ begin
     if AHdr.DataType <> rdDateTime then
       raise EfxRegFileError.Create(SDataTypeError);
     FastMove(AHdr.IntData, Result, SizeOf(TDateTime));
-  end; 
+  end;
 end;
 
 function TfxRegFile.ReadFloat(const Name: string): Double;
@@ -2029,7 +2122,7 @@ begin
     if AHdr.DataType <> rdDouble then
       raise EfxRegFileError.Create(SDataTypeError);
     FastMove(AHdr.IntData, Result, SizeOf(Double));
-  end; 
+  end;
 end;
 
 function TfxRegFile.ReadInteger(const Name: string): Integer;
@@ -2043,7 +2136,7 @@ begin
     if AHdr.DataType <> rdInteger then
       raise EfxRegFileError.Create(SDataTypeError);
     FastMove(AHdr.IntData, Result, SizeOf(Integer));
-  end; 
+  end;
 end;
 
 function TfxRegFile.ReadString(const Name: string): string;
@@ -2200,7 +2293,7 @@ end;
 
 function TfxRegFile.GetItemPos(Index: Integer): Integer;
 begin
-  Result := Integer(FRecOffsetList.Items[Index]); 
+  Result := Integer(FRecOffsetList.Items[Index]);
 end;
 
 function TfxRegFile.GetIndexCount: integer;
@@ -2240,6 +2333,124 @@ end;
 procedure TfxRegFile.CreateKey(const Key: string);
 begin
   InternalCreateKey(Key);
+end;
+
+procedure TfxRegFile.WriteStrings(const Name: string; List: TStrings);
+var
+  AStream: TMemoryStream;
+begin
+  AStream := TMemoryStream.Create;
+  try
+    List.SaveToStream(AStream);
+    WriteStream(Name, AStream);
+  finally
+    AStream.Free;
+  end;
+end;
+
+procedure TfxRegFile.LoadFromStream(AStream: TStream);
+var
+  PtrBuf: Pointer;
+begin
+  Clear;
+  Stream.Size := 0;
+  AStream.Position := 0;
+  if AStream.Size > 0 then
+  begin
+    Stream.Size := AStream.Size;
+    GetMem(PtrBuf, AStream.Size);
+    try
+      AStream.ReadBuffer(PtrBuf^, AStream.Size);
+      Stream.WriteBuffer(PtrBuf^, AStream.Size);      
+    finally
+      FreeMem(PtrBuf);
+    end;
+  end;
+  Initialize;
+end;
+
+procedure TfxRegFile.SaveToStream(AStream: TStream);
+var
+  PtrBuf: Pointer;
+begin
+  Stream.Position := 0;
+  if Stream.Size > 0 then
+  begin
+    GetMem(PtrBuf, Stream.Size);
+    try
+      Stream.ReadBuffer(PtrBuf^, Stream.Size);
+      AStream.WriteBuffer(PtrBuf^, Stream.Size);      
+    finally
+      FreeMem(PtrBuf);
+    end;
+  end;
+end;
+
+procedure TfxRegFile.Compact;
+var
+  ARegFile: TfxRegFile;
+  AHdr: TfxRegDataHeader;
+  ZStream, AStream: TMemoryStream;
+  i, ReadCount, TotalSize: integer;
+  pBuf: Pointer;
+begin
+  ZStream  := TMemoryStream.Create;
+  ARegFile := TfxRegFile.Create(ZStream);
+  try
+    if FRecOffsetList.Count > 0 then
+    for i := 0 to FRecOffsetList.Count-1 do
+    begin
+      AStream := TMemoryStream.Create;
+      try
+        ReadRecordData(Integer(FRecOffsetList.Items[i]), AStream);
+        AStream.Seek(0, soFromBeginning);
+        if (AStream.Size < SizeOf(TfxRegDataHeader)) or
+           (AStream.Read(AHdr, SizeOf(TfxRegDataHeader)) <>
+              SizeOf(TfxRegDataHeader)) then
+          raise EfxRegFileError.Create(SRegfileCorruptError);
+        if CompareStr(AHdr.Ident, fxRootID) <> 0 then
+          ARegFile.WriteRecordData(AStream);
+      finally
+        AStream.Free;
+      end;
+    end;
+    TotalSize := 0;
+    Stream.Size := 0;
+    Stream.Position := 0;
+    FRegCacheManager.Clear;
+    FRecOffsetList.Clear;
+    ARegFile.Stream.Seek(0, soFromBeginning);
+    GetMem(pBuf, fxIndexBlock);
+    try
+      while True do
+      begin
+        ReadCount := ARegFile.Stream.Read(pBuf^, fxIndexBlock);
+        if ReadCount > 0 then
+        begin
+          Stream.Write(pBuf^, ReadCount);
+          TotalSize := TotalSize + ReadCount;
+        end;
+        if (ReadCount <> fxIndexBlock) then
+          break;
+      end;
+      Initialize;
+      Reindex;
+    finally
+      FreeMem(pBuf, fxIndexBlock);
+      Stream.Size := TotalSize;
+    end;
+  finally
+    ARegFile.Free;
+    ZStream.Free;
+  end;
+end;
+
+procedure TfxRegFile.Clear;
+begin
+  FRegCacheManager.Clear;
+  FFileStream.Position := 0;
+  FFileStream.Size := 0;
+  Initialize;
 end;
 
 end.
