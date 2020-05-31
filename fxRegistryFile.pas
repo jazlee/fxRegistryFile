@@ -69,8 +69,8 @@ type
 
   PfxRegFileHeader = ^TfxRegFileHeader;
   TfxRegFileHeader = packed record
-    Ident       : array[0..3] of Char;
-    FileVer     : array[0..3] of Char;
+    Ident       : array[0..3] of AnsiChar;
+    FileVer     : array[0..3] of AnsiChar;
     LastID      : Integer;
     Encrypted   : Boolean;
     RecordCount : Integer;
@@ -287,13 +287,13 @@ resourcestring
   SRegfileCorruptError  = 'Corrupted registry file found';
   SDataTypeError        = 'Value is not assigned with current data type';
 
-
 //Author:            John O'Harrow
 //Date:              N/A
 //Optimized for:     RTL
 //Instructionset(s): IA32
 //Original Name:     FillCharJOH_FPU
 procedure FastFillChar(var Dest; count: Integer; Value: Byte);
+{$IFDEF WIN32}
 asm {Size = 153 Bytes}
   cmp   edx, 32
   mov   ch, cl                    {Copy Value into both Bytes of CX}
@@ -352,6 +352,11 @@ asm {Size = 153 Bytes}
   ret {DO NOT REMOVE - This is for Alignment}
 @@Done:
 end;
+{$ELSE}
+begin
+  FillChar(Dest, Count, Value);
+end;
+{$ENDIF}
 
 //Author:            John O'Harrow
 //Date:              9/8-03
@@ -359,6 +364,7 @@ end;
 //Instructionset(s): IA32
 //Original name:     MoveJOH_IA32
 procedure FastMove(const Source; var Dest; Count : Integer);
+{$IFDEF WIN32}
 const
   TABLESIZE = 24;
 asm
@@ -600,6 +606,11 @@ asm
   mov   cl,[eax]
   mov   [edx],cl
 end;
+{$ELSE}
+begin
+  Move(Source, Dest, Count);
+end;
+{$ENDIF}
 
 { TfxRecList }
 procedure QuickSort(SortList: PPointerList; L, R: Integer;
@@ -630,7 +641,7 @@ end;
 procedure TfxRecList.Reindex(Compare: TfxListSortCompare);
 begin
   if (List <> nil) and (Count > 0) then
-    QuickSort(List, 0, Count - 1, Compare);
+    QuickSort(@List, 0, Count - 1, Compare);
 end;
 
 { TfxRegCacheManager }
@@ -1257,12 +1268,12 @@ begin
     if p>0 then
     begin
       s := copy(AKeys,1,p-1);
-      if ((pinteger(@pchar(s)[-4])^) > 0) then
+      if (PCardinal(@PChar(s)[-(SizeOf(Cardinal) div 2)])^ > 0) then
         AStrings.Add(s);
-      AKeys := copy(AKeys,p+1,(pinteger(@pchar(AKeys)[-4])^)-p);
+      AKeys := copy(AKeys,p+1,(PCardinal(@PChar(AKeys)[- (SizeOf(Cardinal) div 2)])^)-p);
     end;
   until p=0;
-  if (pinteger(@pchar(AKeys)[-4])^ > 0) then
+  if (PCardinal(@PChar(AKeys)[- (SizeOf(Cardinal) div 2)])^ > 0) then
     AStrings.Add(AKeys);
 end;
 
@@ -2280,7 +2291,7 @@ var
 begin
   pBuf := StrNew(PChar(Value));
   try
-   WriteBinaryData(Name, rdString, pBuf, StrLen(pBuf) + 1);
+   WriteBinaryData(Name, rdString, pBuf, PCardinal(@PChar(pBuf)[-(SizeOf(Cardinal) div 2)])^);
   finally
    StrDispose(pBuf);
   end;
